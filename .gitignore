@@ -1,0 +1,24 @@
+# Binaries
+/relaydeck
+/relaydeck-test
+*.exe
+*.test
+
+# Data (never commit databases)
+/data/
+*.db
+*.db-wal
+*.db-shm
+
+# Local config with real secrets
+.env
+relaydeck.local.yaml
+
+# Build / caches
+/tmp/
+dist/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
