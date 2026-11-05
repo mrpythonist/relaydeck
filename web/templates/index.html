@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RelayDeck — Webhook Gateway</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">⬡ RelayDeck <span class="tag">Never lose a webhook. Never miss an event.</span></div>
+  <div class="top-actions">
+    <button id="themeBtn" title="Toggle theme">🌙 / ☀️</button>
+    <button id="refreshBtn">Refresh</button>
+  </div>
+</header>
+<nav class="tabs" id="tabs">
+  <button data-tab="overview" class="active">Overview</button>
+  <button data-tab="events">Events</button>
+  <button data-tab="deliveries">Deliveries</button>
+  <button data-tab="destinations">Destinations</button>
+  <button data-tab="sources">Sources</button>
+  <button data-tab="failed">Failed Deliveries</button>
+  <button data-tab="settings">Settings</button>
+</nav>
+<main>
+  <section id="tab-overview" class="tab active">
+    <div class="cards" id="statCards"></div>
+    <h2>Recent events</h2>
+    <div id="recentEvents" class="table-wrap"></div>
+  </section>
+  <section id="tab-events" class="tab">
+    <div class="filters">
+      <input id="searchEvent" placeholder="Search by event ID…">
+      <input id="filterSource" placeholder="Filter by source…">
+      <select id="filterStatus"><option value="">All statuses</option><option>delivered</option><option>pending</option><option>in_progress</option><option>failed</option><option>dead</option></select>
+      <button id="applyFilters">Apply</button>
+    </div>
+    <div id="eventsTable" class="table-wrap"></div>
+    <div id="eventDetail" class="detail"></div>
+  </section>
+  <section id="tab-deliveries" class="tab">
+    <div id="deliveriesTable" class="table-wrap"></div>
+  </section>
+  <section id="tab-destinations" class="tab">
+    <h2>Destinations</h2>
+    <div id="destinationsList"></div>
+    <h3>Add destination</h3>
+    <form id="destForm" class="form">
+      <input name="name" placeholder="Name (e.g. laravel-api)" required>
+      <input name="url" placeholder="URL (https://…)" required>
+      <input name="source_filter" placeholder="Source filter (empty = all)">
+      <input name="method" placeholder="Method (POST)" value="POST">
+      <input name="max_retries" type="number" placeholder="Max retries (5)" value="5">
+      <input name="filter_substring" placeholder="Payload substring filter (optional)">
+      <button type="submit">Add destination</button>
+    </form>
+    <p class="hint">Destinations pointing at loopback / private IPs are blocked unless the server was started with <code>allow_private_destinations</code> (local dev only). See Settings.</p>
+  </section>
+  <section id="tab-sources" class="tab">
+    <h2>Sources</h2>
+    <p class="hint">Send webhooks to <code>POST /api/v1/webhooks/{source}</code>. Sources are auto-registered on first use; configure an HMAC secret for a source in <code>relaydeck.yaml</code> to require signed requests.</p>
+    <div id="sourcesList"></div>
+  </section>
+  <section id="tab-failed" class="tab">
+    <h2>Failed &amp; dead deliveries</h2>
+    <div id="failedTable" class="table-wrap"></div>
+  </section>
+  <section id="tab-settings" class="tab">
+    <h2>Settings</h2>
+    <div id="settingsBox" class="detail"></div>
+    <h3>Health</h3>
+    <p><a href="/health" target="_blank" rel="noopener">/health</a> · <a href="/ready" target="_blank" rel="noopener">/ready</a> · <a href="/metrics" target="_blank" rel="noopener">/metrics</a></p>
+    <h3>Quick start</h3>
+    <pre>curl -X POST localhost:8080/api/v1/webhooks/stripe \
+  -H 'Content-Type: application/json' \
+  -d '{"type":"payment_intent.succeeded","id":"pi_123"}'</pre>
+  </section>
+</main>
+<footer>RelayDeck — at-least-once delivery. No exactly-once or zero-loss guarantee is claimed.</footer>
+<script src="/static/app.js"></script>
+</body>
+</html>
