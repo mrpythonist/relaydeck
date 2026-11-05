@@ -1,0 +1,22 @@
+services:
+  relaydeck:
+    build: .
+    image: relaydeck:latest
+    container_name: relaydeck
+    ports:
+      - "8080:8080"
+    environment:
+      RELAYDECK_LISTEN_ADDR: ":8080"
+      RELAYDECK_DATA_DIR: /data
+      RELAYDECK_WORKERS: "4"
+      # RELAYDECK_API_KEY: change-me-to-a-long-random-string
+      # Local development only — never enable in production:
+      # RELAYDECK_ALLOW_PRIVATE_DESTINATIONS: "true"
+    volumes:
+      - relaydeck-data:/data
+      # Optional: mount your config file
+      # - ./examples/relaydeck.yaml:/config/relaydeck.yaml:ro
+    restart: unless-stopped
+
+volumes:
+  relaydeck-data:
