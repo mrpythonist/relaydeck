@@ -1,0 +1,22 @@
+# systemd unit for RelayDeck. Install: copy to /etc/systemd/system/relaydeck.service,
+# create user/group relaydeck, place the binary at /usr/local/bin/relaydeck,
+# then: systemctl daemon-reload && systemctl enable --now relaydeck
+[Unit]
+Description=RelayDeck webhook gateway
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=relaydeck
+Group=relaydeck
+WorkingDirectory=/var/lib/relaydeck
+ExecStart=/usr/local/bin/relaydeck serve --config /etc/relaydeck/relaydeck.yaml
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+ProtectSystem=full
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
