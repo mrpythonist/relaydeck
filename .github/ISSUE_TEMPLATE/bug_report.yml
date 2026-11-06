@@ -1,0 +1,79 @@
+name: Bug report
+description: Something in RelayDeck is not working as expected
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug. Please fill in the fields below.
+        Never include real secrets, API keys, or HMAC secrets in a report.
+        For security problems, do not use this form; see SECURITY.md.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: A clear description of the problem.
+      placeholder: Delivery to my destination stays pending and never succeeds.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: Numbered steps, including the config and requests you used.
+      placeholder: |
+        1. Start RelayDeck with `relaydeck serve`
+        2. Create a destination pointing at https://example.com/hook
+        3. Send a webhook to /api/v1/webhooks/stripe
+        4. Check the dashboard Failed tab
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behaviour
+      description: What you expected to happen instead.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: RelayDeck version
+      description: Output of `relaydeck version`.
+      placeholder: 0.1.0
+    validations:
+      required: true
+  - type: dropdown
+    id: run-mode
+    attributes:
+      label: How do you run RelayDeck?
+      options:
+        - Binary from a release
+        - Built from source
+        - Docker
+        - Docker Compose
+        - systemd
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: OS and architecture
+      placeholder: Ubuntu 24.04, amd64
+    validations:
+      required: false
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Relevant log lines. Redact secrets and API keys first.
+      render: shell
+    validations:
+      required: false
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I checked the dashboard Failed tab and the delivery attempts for the last error.
+        - label: I redacted all secrets, API keys, and signatures from this report.
