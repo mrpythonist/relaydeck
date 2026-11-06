@@ -1,8 +1,15 @@
-# Binaries
+# Binaries and build output
 /relaydeck
 /relaydeck-test
 *.exe
 *.test
+dist/
+
+# Test and coverage output
+coverage.out
+coverage.txt
+*.coverprofile
+*.prof
 
 # Data (never commit databases)
 /data/
@@ -12,13 +19,19 @@
 
 # Local config with real secrets
 .env
+.env.*
+!.env.example
 relaydeck.local.yaml
+
+# Logs
+*.log
 
 # Build / caches
 /tmp/
-dist/
 
 # OS / editor
 .DS_Store
 .idea/
 .vscode/
+*.swp
+*~
