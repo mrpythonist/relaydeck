@@ -32,6 +32,7 @@ import (
 	"github.com/mrpythonist/relaydeck/internal/database"
 	"github.com/mrpythonist/relaydeck/internal/delivery"
 	"github.com/mrpythonist/relaydeck/internal/metrics"
+	"github.com/mrpythonist/relaydeck/internal/plans"
 	"github.com/mrpythonist/relaydeck/internal/security"
 	"github.com/mrpythonist/relaydeck/internal/workers"
 )
@@ -50,6 +51,8 @@ func main() {
 	switch os.Args[1] {
 	case "serve":
 		err = runServe(os.Args[2:])
+	case "prune":
+		err = runPrune(os.Args[2:])
 	case "version", "--version", "-version":
 		fmt.Printf("relaydeck %s\n", Version)
 	case "config":
@@ -78,6 +81,7 @@ func usage() {
 
 Usage:
   relaydeck serve [--config FILE] [--listen ADDR] [--data-dir DIR]
+  relaydeck prune [--config FILE] [--data-dir DIR] [--workspace ID]
   relaydeck version
   relaydeck config validate [--config FILE]
   relaydeck events list [--base-url URL]
@@ -89,11 +93,14 @@ Usage:
 Examples:
   relaydeck serve
   relaydeck serve --config relaydeck.yaml --listen :8080
+  relaydeck prune --workspace ws_abc123
   relaydeck events list --base-url http://localhost:8080
   curl -X POST localhost:8080/api/v1/webhooks/stripe -d '{"type":"payment_intent.succeeded"}'
 
 Environment: RELAYDECK_LISTEN_ADDR, RELAYDECK_DATA_DIR, RELAYDECK_API_KEY,
-  RELAYDECK_WORKERS, RELAYDECK_MAX_PAYLOAD_BYTES, RELAYDECK_ALLOW_PRIVATE_DESTINATIONS
+  RELAYDECK_WORKERS, RELAYDECK_MAX_PAYLOAD_BYTES, RELAYDECK_ALLOW_PRIVATE_DESTINATIONS,
+  RELAYDECK_HOSTED=true, STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET,
+  STRIPE_PRICE_STARTER, STRIPE_PRICE_GROWTH
 `)
 }
 
@@ -262,6 +269,10 @@ func runServe(args []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	go pool.Run(ctx)
+	// Retention pruning: every hour, delete events older than each
+	// workspace's plan retention (Free 3 days, Starter 30, Growth 90).
+	// Self-hosted mode uses the configured RELAYDECK_RETENTION_DAYS.
+	go runPruner(ctx, store, cfg)
 	go func() {
 		slog.Info("relaydeck listening", "addr", cfg.ListenAddr, "data_dir", cfg.DataDir, "workers", cfg.Workers, "version", Version)
 		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -277,6 +288,75 @@ func runServe(args []string) error {
 	if err := httpServer.Shutdown(shutdownCtx); err != nil {
 		return fmt.Errorf("shutdown: %w", err)
 	}
+	return nil
+}
+
+func planRetentionMap() map[string]int {
+	return map[string]int{
+		"free":    plans.Free.RetentionDays,
+		"starter": plans.Starter.RetentionDays,
+		"growth":  plans.Growth.RetentionDays,
+	}
+}
+
+func runPruner(ctx context.Context, store *database.Store, cfg *config.Config) {
+	ticker := time.NewTicker(time.Hour)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			n, err := store.PruneAllWorkspaces(planRetentionMap(), cfg.RetentionDays)
+			if err != nil {
+				slog.Error("retention prune failed", "error", err)
+			} else if n > 0 {
+				slog.Info("retention prune done", "events_deleted", n)
+			}
+		}
+	}
+}
+
+func runPrune(args []string) error {
+	fs := flag.NewFlagSet("prune", flag.ExitOnError)
+	cfgFile := fs.String("config", os.Getenv("RELAYDECK_CONFIG"), "Path to YAML config file")
+	dataDir := fs.String("data-dir", "", "Data directory for SQLite database")
+	workspaceID := fs.String("workspace", "", "Prune only this workspace id (default: all workspaces)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	cfg, err := config.Load(*cfgFile)
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+	if *dataDir != "" {
+		cfg.DataDir = *dataDir
+	}
+	if err := os.MkdirAll(cfg.DataDir, 0o755); err != nil {
+		return fmt.Errorf("create data dir: %w", err)
+	}
+	store, err := database.Open(filepath.Join(cfg.DataDir, "relaydeck.db"))
+	if err != nil {
+		return fmt.Errorf("open database: %w", err)
+	}
+	defer store.Close()
+	if *workspaceID != "" {
+		ws, err := store.GetWorkspace(*workspaceID)
+		if err != nil || ws == nil {
+			return fmt.Errorf("workspace %q not found", *workspaceID)
+		}
+		n, err := store.DeleteOldEventsForWorkspace(ws.ID, plans.Get(ws.Plan).RetentionDays)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("pruned workspace %s (plan %s, retention %d days): %d events deleted\n", ws.ID, ws.Plan, plans.Get(ws.Plan).RetentionDays, n)
+		return nil
+	}
+	n, err := store.PruneAllWorkspaces(planRetentionMap(), cfg.RetentionDays)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("pruned all workspaces: %d events deleted\n", n)
 	return nil
 }
 

@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RelayDeck - Sign in</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">⬡ RelayDeck <span class="tag">Never lose a webhook. Never miss an event.</span></div>
+  <div class="top-actions"><a href="/pricing">Pricing</a></div>
+</header>
+<main>
+  <h1>Sign in or create an account</h1>
+  <p>Hosted RelayDeck uses email and password accounts. One account gets a workspace on the Free plan: 1,000 events a month, 3 destinations, 3 days retention.</p>
+  <div id="msg" class="detail"></div>
+  <h2>Create an account</h2>
+  <form id="signupForm" class="form">
+    <input name="email" type="email" placeholder="Email" required>
+    <input name="password" type="password" placeholder="Password (at least 8 characters)" required minlength="8">
+    <input name="name" placeholder="Your name (optional)">
+    <button type="submit">Create account</button>
+  </form>
+  <h2>Sign in</h2>
+  <form id="loginForm" class="form">
+    <input name="email" type="email" placeholder="Email" required>
+    <input name="password" type="password" placeholder="Password" required>
+    <button type="submit">Sign in</button>
+  </form>
+  <p class="hint">After signing in, the dashboard loads. Use a workspace API key (created in the API) for programmatic access, and send webhooks to <code>POST /ingest/{workspace_public_id}/{source}</code>.</p>
+</main>
+<script>
+async function submitForm(id, url) {
+  const form = document.getElementById(id);
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const data = Object.fromEntries(new FormData(form).entries());
+    const res = await fetch(url, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(data)});
+    const out = await res.json().catch(() => ({}));
+    const msg = document.getElementById('msg');
+    if (res.ok) { window.location.href = '/dashboard'; return; }
+    msg.textContent = out.error || ('Request failed: ' + res.status);
+  });
+}
+submitForm('signupForm', '/api/v1/auth/signup');
+submitForm('loginForm', '/api/v1/auth/login');
+</script>
+</body>
+</html>

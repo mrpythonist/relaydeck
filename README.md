@@ -8,6 +8,26 @@ One binary. One SQLite file. No mandatory Redis, PostgreSQL, Kubernetes, or clou
 
 > **Delivery semantics: at-least-once.** RelayDeck acknowledges an event only after its database transaction commits, and it retries failed deliveries until they succeed or exhaust their retries. RelayDeck does **not** claim exactly-once delivery or zero loss. A crash between the destination receiving a request and the attempt being recorded can cause a duplicate send, so design your endpoints to be idempotent.
 
+## Hosted SaaS
+
+RelayDeck is also available as a hosted service. Run it without managing a server:
+
+```bash
+RELAYDECK_HOSTED=true relaydeck serve
+```
+
+Signup flow: create an account at `/` with email and password, get a workspace, add a destination, then point your provider at `POST /ingest/{workspace_public_id}/{source}`. See `GET /pricing` and `docs/HOSTED.md` for the full setup, Stripe steps and VPS deploy guide.
+
+| Plan | Price | Events / month | Destinations | Retention |
+|---|---|---|---|---|
+| Free | $0 | 1,000 | 3 | 3 days |
+| Starter | $19 | 50,000 | Unlimited | 30 days |
+| Growth | $49 | 500,000 | Unlimited | 90 days |
+
+Over the monthly limit, ingestion returns HTTP 429. Retries do not count against the limit. Plans and caps live in one file, `internal/plans/plans.go`.
+
+Hosted vs self-hosted: self-hosted is the default (`RELAYDECK_HOSTED` off), one tenant, legacy ingestion `POST /api/v1/webhooks/{source}`, no signup. Hosted mode adds users, workspaces, workspace API keys, per-workspace ingestion, usage limits and Stripe billing code. The core delivery engine is the same in both modes. Postgres is not used in Phase 1; hosted stays on SQLite with `workspace_id` on every tenant row, and Postgres is planned for Phase 2.
+
 ## The problem
 
 Webhooks fail in production in familiar ways:
@@ -42,7 +62,8 @@ Implemented in v0.1.0. Nothing in this list is planned or aspirational; planned 
 - **Routing.** Multiple destinations, source filters, optional payload-substring filters, per-destination headers, method, and timeout. Destinations can be enabled or disabled.
 - **SSRF protection.** Destination URLs must be public `http(s)` URLs. Loopback, private, link-local, cloud-metadata (`169.254.169.254`), CGNAT, multicast, and documentation ranges are blocked. Hostnames are resolved and every resolved IP is re-checked (DNS-rebinding defence). Redirects to private IPs are blocked. Private destinations are an explicit local-dev opt-in only.
 - **Embedded dashboard.** No build step, no Node, no CDN. Plain HTML/CSS/JS served from the binary, with dark/light themes and tabs for Overview, Events, Deliveries, Destinations, Sources, Failed, and Settings. All data comes from the live API.
-- **CLI.** `relaydeck serve`, `version`, `config validate`, `events list | inspect | replay`, `destinations list`, `health`.
+- **CLI.** `relaydeck serve`, `version`, `config validate`, `events list | inspect | replay`, `destinations list`, `health`, `prune`.
+- **Hosted (Phase 1, v0.2.0).** Signup/login with bcrypt passwords and session cookies, workspaces, workspace API keys, per-workspace ingestion (`POST /ingest/{workspace}/{source}`), plans and monthly limits with HTTP 429, usage endpoint, retention pruning job and `relaydeck prune` CLI, Stripe Checkout and webhook code (no live keys), pricing page at `/pricing`. See `docs/HOSTED.md`.
 - **Observability.** `GET /health`, `GET /ready`, `GET /metrics` in Prometheus text format, and structured JSON logging.
 - **Security by default.** API-key auth for the management API, sensitive-header redaction on stored events, secret masking in API responses, request-size limits, and server timeouts.
 
@@ -201,7 +222,7 @@ Notes:
 - Secrets in YAML support `${ENV_VAR}` expansion, so config files can be committed without real secrets. Never commit a config file with real secrets in it.
 - Destinations defined in YAML are seeded into the database on startup. A destination with a name that already exists is skipped, not overwritten.
 - Sources defined in YAML are upserted on startup with their secret. Unknown sources that send a webhook are auto-registered with no secret, which means their webhooks are accepted without HMAC verification until you configure a secret.
-- `retention_days` is validated and stored, but no scheduled pruning job runs yet. The `DeleteOldEvents` helper exists in the database package but nothing calls it. Automatic pruning is planned for v0.2.0; until then, old events stay in the database. See [ROADMAP.md](ROADMAP.md).
+- `retention_days` is enforced by an hourly pruning job in v0.2.0 (per-plan retention in hosted mode), plus `relaydeck prune`. See [ROADMAP.md](ROADMAP.md).
 
 Validate any config before starting:
 
@@ -279,7 +300,9 @@ For a delivery to destination D with `max_retries = N`, `backoff_base = B`, `bac
 ```
 cmd/relaydeck/            CLI entrypoint (serve, version, config, events, destinations, health)
 internal/api/             HTTP server, ingestion, management API, dashboard handlers
-internal/auth/            API-key middleware
+internal/auth/            API-key middleware, hosted password auth
+internal/plans/           plan caps and limits (hosted)
+internal/billing/         Stripe Checkout and webhook code (hosted)
 internal/config/          env + YAML + flag configuration
 internal/database/        SQLite (WAL) store, schema, leases, stats
 internal/delivery/        backoff math + SSRF-safe HTTP sender
@@ -299,7 +322,7 @@ migrations/               initial schema (also embedded in the database package)
 ## Testing
 
 ```bash
-go test ./...        # unit + integration tests (46 test functions)
+go test ./...        # unit + integration tests (61 test functions)
 go test -race ./...  # race detector (run on core packages)
 go vet ./...
 gofmt -l cmd internal tests web
@@ -309,7 +332,7 @@ make vet             # go vet ./...
 make fmt             # gofmt -l cmd internal tests web
 ```
 
-The test suite covers ingestion, idempotency, HMAC verification, SSRF validation, routing, backoff math, lease claiming, retry and replay, API-key auth, and metrics. `tests/integration_test.go` runs a real server against a real receiver. The suite was last run and passing (46 tests, race tests on core packages) during development of v0.1.0, along with a live smoke test that delivered a real webhook end to end. Run the suite yourself before trusting a new checkout; the commands above are the source of truth.
+The test suite covers ingestion, idempotency, HMAC verification, SSRF validation, routing, backoff math, lease claiming, retry and replay, API-key auth, and metrics. `tests/integration_test.go` runs a real server against a real receiver. The suite was last run and passing (61 tests, race tests on core packages) after v0.2.0 Phase 1, along with a hosted-mode live smoke test that delivered a real webhook end to end and verified workspace isolation. Run the suite yourself before trusting a new checkout; the commands above are the source of truth.
 
 ## Deployment
 
@@ -326,13 +349,13 @@ RelayDeck is one binary plus one SQLite file, so deployment is a copy of two thi
 - **SSRF:** destination URLs must be public `http(s)` URLs. Loopback, RFC1918, link-local (including the `169.254.169.254` cloud-metadata endpoint), `::1`, `0.0.0.0/8`, multicast, CGNAT, and documentation ranges are blocked. Hostnames are resolved and every resolved IP is re-checked (DNS-rebinding defence). Redirects to private IPs are always blocked, even when the configured destination itself was allowed to be private.
 - **Secrets:** source HMAC secrets and the API key are compared in constant time and are never logged or returned by the API. Stored event headers are redacted (`Authorization`, `X-Api-Key`, cookies, signatures, and any header whose name contains `secret`, `token`, or `password`). Destination responses mask sensitive header values as `***REDACTED***`.
 - **Limits:** configurable payload cap (default 1 MiB, 413 above it), per-destination timeouts, bounded worker concurrency, 15 s HTTP server read/write timeouts.
-- **No credential storage:** RelayDeck stores no user passwords. Destination custom headers are operator-configured; treat your config file as secret material and never commit it with real secrets.
+- **Credentials:** self-hosted mode stores no user passwords. Hosted mode stores bcrypt password hashes and hashed session tokens only, never plain passwords. Destination custom headers are operator-configured; treat your config file as secret material and never commit it with real secrets.
 
 To report a vulnerability, see [SECURITY.md](SECURITY.md). Do not open a public issue for a security problem.
 
 ## Roadmap
 
-See [ROADMAP.md](ROADMAP.md). Near term (v0.2.0): per-destination HMAC signing of outbound deliveries, JSON-path event filtering, the retention pruning job, delivery payload transformation, and CLI management of destinations. Longer term: an optional PostgreSQL backend (SQLite stays the default, never mandatory) and dashboard test events.
+See [ROADMAP.md](ROADMAP.md). v0.2.0 adds the hosted SaaS Phase 1 (multi-tenancy, auth, plans, Stripe billing code). Next: per-destination HMAC signing of outbound deliveries, JSON-path event filtering, delivery payload transformation, and CLI management of destinations. Longer term: an optional PostgreSQL backend (SQLite stays the default, never mandatory) and dashboard test events.
 
 ## Contributing
 

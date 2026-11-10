@@ -7,6 +7,35 @@ All notable changes to RelayDeck are documented here. The format follows
 
 ### Added
 
+- Multi-tenancy: users, workspaces, memberships, workspace API keys
+  (migration 002). Every tenant row carries `workspace_id`; legacy
+  single-tenant data keeps workspace "" and still works.
+- Auth: email + password signup/login/logout with bcrypt, session
+  cookies, workspace auth for the management API and dashboard.
+- Per-workspace ingestion `POST /ingest/{workspace_public_id}/{source}`.
+  Legacy ingestion kept for self-hosted mode, HTTP 410 in hosted mode.
+- Plans in `internal/plans/plans.go`: Free $0 / 1,000 events / 3
+  destinations / 3 days, Starter $19 / 50,000 / 30 days, Growth $49 /
+  500,000 / 90 days. Monthly usage counting, usage endpoint, HTTP 429
+  when over the limit.
+- Retention pruning: hourly background job with per-plan retention,
+  `relaydeck prune` CLI, and `POST /api/v1/workspaces/{id}/prune`.
+- Stripe billing code only: Checkout session creation and webhook
+  handler for `checkout.session.completed` and
+  `customer.subscription.deleted`. No live keys, price IDs from env.
+- Pricing page at `/pricing`, login/signup page, `docs/HOSTED.md`.
+- Tenancy isolation tests, auth tests, limit tests, pruning tests.
+
+### Changed
+
+- Sources, destinations and events now use workspace-scoped keys:
+  `(workspace_id, name)`, `(workspace_id, name)`,
+  `(workspace_id, source, idempotency_key)`. Pre-Phase-1 databases are
+  migrated in place on startup.
+
+
+### Added
+
 - Project documentation set: rewritten README, API and CLI references
   (`docs/api.md`, `docs/cli.md`), development guide (`docs/development.md`),
   support guide (`SUPPORT.md`), and YAML issue templates.
@@ -18,8 +47,8 @@ All notable changes to RelayDeck are documented here. The format follows
 
 - Corrected the v0.1.0 notes: the CI and release workflows were listed as
   shipped, but they were never added to the repository. The Docker build is
-  also still unverified, and retention pruning is not wired yet. All three
-  are now stated honestly in the README and ROADMAP.
+  also still unverified. Retention pruning was not wired in v0.1.0; it is
+  wired in v0.2.0 (see above).
 
 ## [0.1.0] - 2026-11-05
 

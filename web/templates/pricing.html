@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RelayDeck - Pricing</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">⬡ RelayDeck <span class="tag">Never lose a webhook. Never miss an event.</span></div>
+  <div class="top-actions"><a href="/dashboard">Dashboard</a></div>
+</header>
+<main>
+  <h1>Pricing</h1>
+  <p>RelayDeck receives webhooks from Stripe, GitHub, Shopify and your own systems, stores each event durably first, then delivers it with retries. Delivery is at-least-once. No exactly-once or zero-loss guarantee is claimed.</p>
+  <div class="cards">
+    <div class="card">
+      <h2>Free - $0 / month</h2>
+      <ul>
+        <li>1,000 events per month</li>
+        <li>3 destinations</li>
+        <li>3 days retention</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h2>Starter - $19 / month</h2>
+      <ul>
+        <li>50,000 events per month</li>
+        <li>Unlimited destinations</li>
+        <li>30 days retention</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h2>Growth - $49 / month</h2>
+      <ul>
+        <li>500,000 events per month</li>
+        <li>Unlimited destinations</li>
+        <li>90 days retention</li>
+      </ul>
+    </div>
+  </div>
+  <p>Over the monthly limit, ingestion returns HTTP 429 until the next calendar month. Retries do not count against the limit. <a href="/dashboard">Create an account</a> to get a workspace and an ingest URL.</p>
+  <h2>How it works</h2>
+  <ol>
+    <li>Create an account and a workspace.</li>
+    <li>Add a destination, for example your API endpoint.</li>
+    <li>Point Stripe or GitHub at <code>POST /ingest/{workspace_public_id}/{source}</code>.</li>
+    <li>Watch deliveries, retries and failures in the dashboard. Replay any event.</li>
+  </ol>
+  <p>Prefer to run it yourself? RelayDeck is open source and self-hostable with one binary and one SQLite file. See the README.</p>
+</main>
+<footer>RelayDeck - at-least-once delivery. No exactly-once or zero-loss guarantee is claimed.</footer>
+</body>
+</html>

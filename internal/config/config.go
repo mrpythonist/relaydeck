@@ -43,6 +43,7 @@ type File struct {
 	AllowPrivate    bool                `yaml:"allow_private_destinations"`
 	TrustedInternal []string            `yaml:"trusted_internal_destinations"`
 	RetentionDays   int                 `yaml:"retention_days"`
+	Hosted          bool                `yaml:"hosted"`
 	Sources         []SourceConfig      `yaml:"sources"`
 	Destinations    []DestinationConfig `yaml:"destinations"`
 }
@@ -57,9 +58,19 @@ type Config struct {
 	AllowPrivate    bool
 	TrustedInternal []string
 	RetentionDays   int
-	Sources         []SourceConfig
-	Destinations    []DestinationConfig
-	ConfigFile      string
+	// Hosted enables multi-tenant mode. Default false keeps the old
+	// single-tenant behaviour for self-hosters, with no breaking change.
+	Hosted bool
+	// Stripe billing (hosted only). Empty means billing is not configured.
+	StripeSecretKey     string
+	StripeWebhookSecret string
+	StripePriceStarter  string
+	StripePriceGrowth   string
+	StripeSuccessURL    string
+	StripeCancelURL     string
+	Sources             []SourceConfig
+	Destinations        []DestinationConfig
+	ConfigFile          string
 }
 
 func Defaults() *Config {
@@ -128,6 +139,9 @@ func applyFile(cfg *Config, f *File) {
 	if f.RetentionDays > 0 {
 		cfg.RetentionDays = f.RetentionDays
 	}
+	if f.Hosted {
+		cfg.Hosted = true
+	}
 	if len(f.Sources) > 0 {
 		cfg.Sources = f.Sources
 	}
@@ -171,6 +185,27 @@ func applyEnv(cfg *Config) {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			cfg.RetentionDays = n
 		}
+	}
+	if v, ok := getenv("RELAYDECK_HOSTED"); ok {
+		cfg.Hosted = v == "1" || strings.EqualFold(v, "true")
+	}
+	if v, ok := getenv("STRIPE_SECRET_KEY"); ok {
+		cfg.StripeSecretKey = v
+	}
+	if v, ok := getenv("STRIPE_WEBHOOK_SECRET"); ok {
+		cfg.StripeWebhookSecret = v
+	}
+	if v, ok := getenv("STRIPE_PRICE_STARTER"); ok {
+		cfg.StripePriceStarter = v
+	}
+	if v, ok := getenv("STRIPE_PRICE_GROWTH"); ok {
+		cfg.StripePriceGrowth = v
+	}
+	if v, ok := getenv("STRIPE_SUCCESS_URL"); ok {
+		cfg.StripeSuccessURL = v
+	}
+	if v, ok := getenv("STRIPE_CANCEL_URL"); ok {
+		cfg.StripeCancelURL = v
 	}
 	if v, ok := getenv("RELAYDECK_CONFIG"); ok && cfg.ConfigFile == "" {
 		cfg.ConfigFile = v

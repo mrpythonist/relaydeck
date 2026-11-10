@@ -1,6 +1,10 @@
 # systemd unit for RelayDeck. Install: copy to /etc/systemd/system/relaydeck.service,
 # create user/group relaydeck, place the binary at /usr/local/bin/relaydeck,
 # then: systemctl daemon-reload && systemctl enable --now relaydeck
+# Hosted mode: put RELAYDECK_HOSTED=true and the STRIPE_* variables in
+# /etc/relaydeck/env (not in this file) and add EnvironmentFile below.
+# See docs/HOSTED.md for the VPS deploy steps. This unit has not been
+# tested live on a VPS in Phase 1.
 [Unit]
 Description=RelayDeck webhook gateway
 After=network-online.target
@@ -11,6 +15,7 @@ Type=simple
 User=relaydeck
 Group=relaydeck
 WorkingDirectory=/var/lib/relaydeck
+EnvironmentFile=-/etc/relaydeck/env
 ExecStart=/usr/local/bin/relaydeck serve --config /etc/relaydeck/relaydeck.yaml
 Restart=on-failure
 RestartSec=5
