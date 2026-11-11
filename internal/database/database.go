@@ -20,6 +20,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mrpythonist/relaydeck/internal/jsonpath"
 	_ "modernc.org/sqlite"
 )
 
@@ -95,6 +96,9 @@ CREATE TABLE IF NOT EXISTS destinations (
   backoff_base_ms INTEGER NOT NULL DEFAULT 1000,
   backoff_max_ms INTEGER NOT NULL DEFAULT 60000,
   filter_substring TEXT NOT NULL DEFAULT '',
+  filter_jsonpath TEXT NOT NULL DEFAULT '',
+  signing_secret TEXT NOT NULL DEFAULT '',
+  header_templates_json TEXT NOT NULL DEFAULT '{}',
   enabled INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
@@ -176,9 +180,21 @@ type Destination struct {
 	BackoffBaseMs  int64             `json:"backoff_base_ms"`
 	BackoffMaxMs   int64             `json:"backoff_max_ms"`
 	Filter         string            `json:"filter_substring"`
-	Enabled        bool              `json:"enabled"`
-	CreatedAt      time.Time         `json:"created_at"`
-	UpdatedAt      time.Time         `json:"updated_at"`
+	// JSONPathFilter is an optional "path=expected" expression evaluated
+	// against the JSON payload. When set, it must match in addition to
+	// Filter. See internal/jsonpath.
+	JSONPathFilter string `json:"filter_jsonpath,omitempty"`
+	// SigningSecret, when set, signs every delivery with HMAC-SHA256 over
+	// the raw body, sent as X-RelayDeck-Signature: sha256=<hex>. The API
+	// never returns the real value; see maskDestination in internal/api.
+	SigningSecret string `json:"signing_secret,omitempty"`
+	// HeaderTemplates maps a header name to a template rendered from the
+	// event payload ({{path}} placeholders). Rendered after Headers, so
+	// a template wins on a name clash. See internal/jsonpath.
+	HeaderTemplates map[string]string `json:"header_templates,omitempty"`
+	Enabled         bool              `json:"enabled"`
+	CreatedAt       time.Time         `json:"created_at"`
+	UpdatedAt       time.Time         `json:"updated_at"`
 }
 
 // Delivery is one event -> one destination delivery job.
@@ -282,6 +298,10 @@ func Open(path string) (*Store, error) {
 	if err := s.migrateHosted(); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("migrate hosted: %w", err)
+	}
+	if err := s.migrateV021(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("migrate v0.2.1: %w", err)
 	}
 	return s, nil
 }
@@ -412,9 +432,9 @@ func (s *Store) migrateHosted() error {
 		if _, err := s.DB.Exec(`PRAGMA foreign_keys=OFF`); err != nil {
 			return err
 		}
-		_, err := s.DB.Exec(`CREATE TABLE destinations_new (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL DEFAULT '', name TEXT NOT NULL, source_filter TEXT NOT NULL DEFAULT '', url TEXT NOT NULL, method TEXT NOT NULL DEFAULT 'POST', headers_json TEXT NOT NULL DEFAULT '{}', timeout_seconds INTEGER NOT NULL DEFAULT 10, max_retries INTEGER NOT NULL DEFAULT 5, backoff_base_ms INTEGER NOT NULL DEFAULT 1000, backoff_max_ms INTEGER NOT NULL DEFAULT 60000, filter_substring TEXT NOT NULL DEFAULT '', enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE(workspace_id, name))`)
+		_, err := s.DB.Exec(`CREATE TABLE destinations_new (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL DEFAULT '', name TEXT NOT NULL, source_filter TEXT NOT NULL DEFAULT '', url TEXT NOT NULL, method TEXT NOT NULL DEFAULT 'POST', headers_json TEXT NOT NULL DEFAULT '{}', timeout_seconds INTEGER NOT NULL DEFAULT 10, max_retries INTEGER NOT NULL DEFAULT 5, backoff_base_ms INTEGER NOT NULL DEFAULT 1000, backoff_max_ms INTEGER NOT NULL DEFAULT 60000, filter_substring TEXT NOT NULL DEFAULT '', filter_jsonpath TEXT NOT NULL DEFAULT '', signing_secret TEXT NOT NULL DEFAULT '', header_templates_json TEXT NOT NULL DEFAULT '{}', enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE(workspace_id, name))`)
 		if err == nil {
-			_, err = s.DB.Exec(`INSERT OR IGNORE INTO destinations_new(id,workspace_id,name,source_filter,url,method,headers_json,timeout_seconds,max_retries,backoff_base_ms,backoff_max_ms,filter_substring,enabled,created_at,updated_at) SELECT id,workspace_id,name,source_filter,url,method,headers_json,timeout_seconds,max_retries,backoff_base_ms,backoff_max_ms,filter_substring,enabled,created_at,updated_at FROM destinations`)
+			_, err = s.DB.Exec(`INSERT OR IGNORE INTO destinations_new(id,workspace_id,name,source_filter,url,method,headers_json,timeout_seconds,max_retries,backoff_base_ms,backoff_max_ms,filter_substring,filter_jsonpath,signing_secret,header_templates_json,enabled,created_at,updated_at) SELECT id,workspace_id,name,source_filter,url,method,headers_json,timeout_seconds,max_retries,backoff_base_ms,backoff_max_ms,filter_substring,'','', '{}',enabled,created_at,updated_at FROM destinations`)
 		}
 		if err == nil {
 			_, err = s.DB.Exec(`DROP TABLE destinations`)
@@ -458,6 +478,23 @@ func (s *Store) migrateHosted() error {
 	CREATE INDEX IF NOT EXISTS idx_destinations_ws ON destinations(workspace_id, name);
 	CREATE INDEX IF NOT EXISTS idx_api_keys_ws ON workspace_api_keys(workspace_id)`)
 	return err
+}
+
+// migrateV021 adds the v0.2.1 destination columns (JSON-path filter,
+// outbound signing secret, header templates) to databases created before
+// them. Fresh databases get them from the schema; pre-Phase-1 databases
+// rebuilt by migrateHosted get them from the rebuild SQL.
+func (s *Store) migrateV021() error {
+	for _, c := range []struct{ col, def string }{
+		{"filter_jsonpath", "TEXT NOT NULL DEFAULT ''"},
+		{"signing_secret", "TEXT NOT NULL DEFAULT ''"},
+		{"header_templates_json", "TEXT NOT NULL DEFAULT '{}'"},
+	} {
+		if err := s.addColumnIfMissing("destinations", c.col, c.def); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // --- Users ---
@@ -758,21 +795,22 @@ func (s *Store) ListSourcesForWorkspace(workspaceID string) ([]string, error) {
 
 func (s *Store) CreateDestination(d *Destination) error {
 	d.CreatedAt, d.UpdatedAt = time.Now().UTC(), time.Now().UTC()
-	_, err := s.DB.Exec(`INSERT INTO destinations(id,workspace_id,name,source_filter,url,method,headers_json,timeout_seconds,max_retries,backoff_base_ms,backoff_max_ms,filter_substring,enabled,created_at,updated_at)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, d.ID, d.WorkspaceID, d.Name, d.SourceFilter, d.URL, d.Method, marshalHeaders(d.Headers), d.TimeoutSeconds, d.MaxRetries, d.BackoffBaseMs, d.BackoffMaxMs, d.Filter, boolToInt(d.Enabled), d.CreatedAt.Format(time.RFC3339Nano), d.UpdatedAt.Format(time.RFC3339Nano))
+	_, err := s.DB.Exec(`INSERT INTO destinations(id,workspace_id,name,source_filter,url,method,headers_json,timeout_seconds,max_retries,backoff_base_ms,backoff_max_ms,filter_substring,filter_jsonpath,signing_secret,header_templates_json,enabled,created_at,updated_at)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, d.ID, d.WorkspaceID, d.Name, d.SourceFilter, d.URL, d.Method, marshalHeaders(d.Headers), d.TimeoutSeconds, d.MaxRetries, d.BackoffBaseMs, d.BackoffMaxMs, d.Filter, d.JSONPathFilter, d.SigningSecret, marshalHeaders(d.HeaderTemplates), boolToInt(d.Enabled), d.CreatedAt.Format(time.RFC3339Nano), d.UpdatedAt.Format(time.RFC3339Nano))
 	return err
 }
 
-const destinationCols = `id,workspace_id,name,source_filter,url,method,headers_json,timeout_seconds,max_retries,backoff_base_ms,backoff_max_ms,filter_substring,enabled,created_at,updated_at`
+const destinationCols = `id,workspace_id,name,source_filter,url,method,headers_json,timeout_seconds,max_retries,backoff_base_ms,backoff_max_ms,filter_substring,filter_jsonpath,signing_secret,header_templates_json,enabled,created_at,updated_at`
 
 func scanDestination(rows interface{ Scan(...any) error }) (*Destination, error) {
 	var d Destination
-	var headers, created, updated string
+	var headers, templates, created, updated string
 	var enabled int
-	if err := rows.Scan(&d.ID, &d.WorkspaceID, &d.Name, &d.SourceFilter, &d.URL, &d.Method, &headers, &d.TimeoutSeconds, &d.MaxRetries, &d.BackoffBaseMs, &d.BackoffMaxMs, &d.Filter, &enabled, &created, &updated); err != nil {
+	if err := rows.Scan(&d.ID, &d.WorkspaceID, &d.Name, &d.SourceFilter, &d.URL, &d.Method, &headers, &d.TimeoutSeconds, &d.MaxRetries, &d.BackoffBaseMs, &d.BackoffMaxMs, &d.Filter, &d.JSONPathFilter, &d.SigningSecret, &templates, &enabled, &created, &updated); err != nil {
 		return nil, err
 	}
 	d.Headers = unmarshalHeaders(headers)
+	d.HeaderTemplates = unmarshalHeaders(templates)
 	d.Enabled = enabled == 1
 	d.CreatedAt, d.UpdatedAt = parseTime(created), parseTime(updated)
 	return &d, nil
@@ -838,28 +876,75 @@ func (s *Store) CountDestinationsForWorkspace(workspaceID string) (int, error) {
 
 func (s *Store) UpdateDestination(d *Destination) error {
 	d.UpdatedAt = time.Now().UTC()
-	_, err := s.DB.Exec(`UPDATE destinations SET name=?,source_filter=?,url=?,method=?,headers_json=?,timeout_seconds=?,max_retries=?,backoff_base_ms=?,backoff_max_ms=?,filter_substring=?,enabled=?,updated_at=? WHERE id=?`,
-		d.Name, d.SourceFilter, d.URL, d.Method, marshalHeaders(d.Headers), d.TimeoutSeconds, d.MaxRetries, d.BackoffBaseMs, d.BackoffMaxMs, d.Filter, boolToInt(d.Enabled), d.UpdatedAt.Format(time.RFC3339Nano), d.ID)
+	_, err := s.DB.Exec(`UPDATE destinations SET name=?,source_filter=?,url=?,method=?,headers_json=?,timeout_seconds=?,max_retries=?,backoff_base_ms=?,backoff_max_ms=?,filter_substring=?,filter_jsonpath=?,signing_secret=?,header_templates_json=?,enabled=?,updated_at=? WHERE id=?`,
+		d.Name, d.SourceFilter, d.URL, d.Method, marshalHeaders(d.Headers), d.TimeoutSeconds, d.MaxRetries, d.BackoffBaseMs, d.BackoffMaxMs, d.Filter, d.JSONPathFilter, d.SigningSecret, marshalHeaders(d.HeaderTemplates), boolToInt(d.Enabled), d.UpdatedAt.Format(time.RFC3339Nano), d.ID)
 	return err
 }
 
 func (s *Store) DeleteDestination(id string) error {
-	_, err := s.DB.Exec(`DELETE FROM destinations WHERE id=?`, id)
+	_, err := s.deleteDestinationTx(id, "")
 	return err
 }
 
 func (s *Store) DeleteDestinationForWorkspace(id, workspaceID string) (bool, error) {
-	res, err := s.DB.Exec(`DELETE FROM destinations WHERE id=? AND workspace_id=?`, id, workspaceID)
+	return s.deleteDestinationTx(id, workspaceID)
+}
+
+// deleteDestinationTx deletes a destination and its delivery history
+// (attempts, then deliveries) in one transaction. The deliveries table
+// references destinations(id) with no ON DELETE CASCADE, so deleting the
+// destination first would fail the foreign key whenever it has ever
+// received a delivery. The events themselves are kept: an event can be
+// shared by other destinations.
+func (s *Store) deleteDestinationTx(id, workspaceID string) (bool, error) {
+	tx, err := s.DB.Begin()
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	var q string
+	var args []any
+	if workspaceID == "" {
+		q = `DELETE FROM attempts WHERE delivery_id IN (SELECT id FROM deliveries WHERE destination_id=?)`
+		args = []any{id}
+	} else {
+		q = `DELETE FROM attempts WHERE delivery_id IN (SELECT id FROM deliveries WHERE destination_id=? AND workspace_id=?)`
+		args = []any{id, workspaceID}
+	}
+	if _, err := tx.Exec(q, args...); err != nil {
+		return false, err
+	}
+	if workspaceID == "" {
+		q = `DELETE FROM deliveries WHERE destination_id=?`
+		args = []any{id}
+	} else {
+		q = `DELETE FROM deliveries WHERE destination_id=? AND workspace_id=?`
+		args = []any{id, workspaceID}
+	}
+	if _, err := tx.Exec(q, args...); err != nil {
+		return false, err
+	}
+	var res sql.Result
+	if workspaceID == "" {
+		res, err = tx.Exec(`DELETE FROM destinations WHERE id=?`, id)
+	} else {
+		res, err = tx.Exec(`DELETE FROM destinations WHERE id=? AND workspace_id=?`, id, workspaceID)
+	}
 	if err != nil {
 		return false, err
 	}
 	n, _ := res.RowsAffected()
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
 	return n > 0, nil
 }
 
 // MatchingDestinations returns enabled destinations whose source filter
 // matches source (empty filter = all) and whose substring filter, if set,
-// appears in the payload. Legacy wrapper: workspace "" only.
+// appears in the payload, and whose JSON-path filter, if set, matches the
+// payload. Both filters must pass when both are set. Legacy wrapper:
+// workspace "" only.
 func (s *Store) MatchingDestinations(source string, payload []byte) ([]*Destination, error) {
 	return s.MatchingDestinationsForWorkspace("", source, payload)
 }
@@ -878,6 +963,9 @@ func (s *Store) MatchingDestinationsForWorkspace(workspaceID, source string, pay
 			continue
 		}
 		if d.Filter != "" && !strings.Contains(string(payload), d.Filter) {
+			continue
+		}
+		if d.JSONPathFilter != "" && !jsonpath.Match(payload, d.JSONPathFilter) {
 			continue
 		}
 		out = append(out, d)

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/mrpythonist/relaydeck/internal/database"
+	"github.com/mrpythonist/relaydeck/internal/jsonpath"
 	"github.com/mrpythonist/relaydeck/internal/security"
 )
 
@@ -116,6 +117,13 @@ func (s *Sender) isTrusted(host string) bool {
 
 // Send delivers payload to dest. Validates the URL first (SSRF), then sends
 // with the destination timeout. No DB transaction is held during the call.
+//
+// Header order: static headers configured on the destination first, then
+// header templates rendered from the payload (templates win on a name
+// clash), then the HMAC signature last when a signing secret is set, so
+// no template can overwrite it. The signature is HMAC-SHA256 over the raw
+// body, sent as X-RelayDeck-Signature: sha256=<hex>, matching the format
+// the ingestion side verifies.
 func (s *Sender) Send(ctx context.Context, dest *database.Destination, payload []byte, contentType string) Result {
 	start := time.Now()
 	if err := s.validate(dest.URL); err != nil {
@@ -146,6 +154,15 @@ func (s *Sender) Send(ctx context.Context, dest *database.Destination, payload [
 	// the API; see SECURITY.md.
 	for k, v := range dest.Headers {
 		req.Header.Set(k, v)
+	}
+	// Header templates are rendered from the event payload. Values come
+	// from the payload itself, so a template can only surface data the
+	// event already carried; the template patterns are operator-configured.
+	for k, tpl := range dest.HeaderTemplates {
+		req.Header.Set(k, jsonpath.RenderTemplate(payload, tpl))
+	}
+	if dest.SigningSecret != "" {
+		req.Header.Set("X-RelayDeck-Signature", "sha256="+security.HMACSHA256Hex(dest.SigningSecret, payload))
 	}
 	client := &http.Client{
 		Transport: s.safeTransport(),

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/mrpythonist/relaydeck/internal/database"
+	"github.com/mrpythonist/relaydeck/internal/security"
 )
 
 func TestBackoffDelayBounds(t *testing.T) {
@@ -112,4 +113,99 @@ func TestSendBlocksRedirectToPrivate(t *testing.T) {
 		t.Fatalf("expected block, got %+v", res)
 	}
 	_ = fmt.Sprint()
+}
+
+func TestSendSignsWithHMAC(t *testing.T) {
+	var gotSig string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotSig = r.Header.Get("X-RelayDeck-Signature")
+		w.WriteHeader(200)
+	}))
+	defer srv.Close()
+	s := NewSender(true, nil)
+	payload := []byte(`{"type":"payment_intent.succeeded"}`)
+	dest := &database.Destination{URL: srv.URL, Method: "POST", TimeoutSeconds: 5, SigningSecret: "dst-secret"}
+	res := s.Send(context.Background(), dest, payload, "application/json")
+	if !Success(res) {
+		t.Fatalf("expected success, got %+v", res)
+	}
+	if gotSig == "" {
+		t.Fatal("no X-RelayDeck-Signature header sent")
+	}
+	if !security.VerifySignature("dst-secret", payload, gotSig) {
+		t.Fatalf("signature %q does not verify", gotSig)
+	}
+	if security.VerifySignature("wrong-secret", payload, gotSig) {
+		t.Fatal("signature verified with the wrong secret")
+	}
+}
+
+func TestSendNoSignatureWithoutSecret(t *testing.T) {
+	var gotSig string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotSig = r.Header.Get("X-RelayDeck-Signature")
+		w.WriteHeader(200)
+	}))
+	defer srv.Close()
+	s := NewSender(true, nil)
+	dest := &database.Destination{URL: srv.URL, Method: "POST", TimeoutSeconds: 5}
+	res := s.Send(context.Background(), dest, []byte(`{}`), "application/json")
+	if !Success(res) || gotSig != "" {
+		t.Fatalf("expected success with no signature header, got %+v sig=%q", res, gotSig)
+	}
+}
+
+func TestSendHeaderTemplates(t *testing.T) {
+	var gotType, gotID, gotMissing, gotStatic string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotType = r.Header.Get("X-Event-Type")
+		gotID = r.Header.Get("X-Event-ID")
+		gotMissing = r.Header.Get("X-Missing")
+		gotStatic = r.Header.Get("X-Static")
+		w.WriteHeader(200)
+	}))
+	defer srv.Close()
+	s := NewSender(true, nil)
+	payload := []byte(`{"type":"charge.succeeded","id":"evt_123"}`)
+	dest := &database.Destination{
+		URL: srv.URL, Method: "POST", TimeoutSeconds: 5,
+		Headers: map[string]string{"X-Static": "plain"},
+		HeaderTemplates: map[string]string{
+			"X-Event-Type": "{{.type}}",
+			"X-Event-ID":   "evt-{{.id}}",
+			"X-Missing":    "{{.nope}}",
+		},
+	}
+	res := s.Send(context.Background(), dest, payload, "application/json")
+	if !Success(res) {
+		t.Fatalf("expected success, got %+v", res)
+	}
+	if gotType != "charge.succeeded" || gotID != "evt-evt_123" {
+		t.Fatalf("templates not rendered: type=%q id=%q", gotType, gotID)
+	}
+	if gotMissing != "" {
+		t.Fatalf("missing path should render empty, got %q", gotMissing)
+	}
+	if gotStatic != "plain" {
+		t.Fatalf("static header lost: %q", gotStatic)
+	}
+}
+
+func TestSendTemplateWinsOverStaticHeader(t *testing.T) {
+	var got string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Get("X-Event-Type")
+		w.WriteHeader(200)
+	}))
+	defer srv.Close()
+	s := NewSender(true, nil)
+	dest := &database.Destination{
+		URL: srv.URL, Method: "POST", TimeoutSeconds: 5,
+		Headers:         map[string]string{"X-Event-Type": "static"},
+		HeaderTemplates: map[string]string{"X-Event-Type": "{{.type}}"},
+	}
+	res := s.Send(context.Background(), dest, []byte(`{"type":"live"}`), "application/json")
+	if !Success(res) || got != "live" {
+		t.Fatalf("template should win on name clash, got %+v header=%q", res, got)
+	}
 }

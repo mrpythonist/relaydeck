@@ -67,11 +67,29 @@ recovered automatically. Pending events therefore survive restarts.
   third-party choices, so they are always strict unless the host is
   explicitly trusted).
 - Response bodies are truncated to 4 KiB on read and 1 KiB when stored.
+- Outbound HMAC signing (v0.2.1): when a destination has a signing secret,
+  every delivery carries `X-RelayDeck-Signature: sha256=<hex>`, HMAC-SHA256
+  over the raw body, set last so no header template can overwrite it.
+  Receivers verify it with the same format the ingestion side accepts.
+- Header templates (v0.2.1): a destination can map header names to
+  templates rendered from the event payload (`{{path}}` placeholders,
+  resolved by `internal/jsonpath`). Templates are applied after the static
+  headers, so a template wins on a name clash. Template values come from
+  the payload itself; the patterns are operator-configured.
 
 ### Routing (`internal/routing`, `internal/database.MatchingDestinations`)
 A destination matches when it is enabled, its `source_filter` is empty or
-equals the event source, and its `filter_substring` (if set) appears in the
-raw payload. Deliberately simple — no rules engine in the MVP.
+equals the event source, its `filter_substring` (if set) appears in the
+raw payload, and its `filter_jsonpath` (if set) matches the payload. The
+JSON-path filter is an expression `path=expected` (for example
+`type=payment_intent.succeeded`); the path uses dotted field names with
+optional `[n]` array indexes, and the value must equal the expected
+string. Both filters must pass when both are set. A path that does not
+resolve, or a non-JSON payload, never matches a JSON-path filter.
+Deliberately simple, no rules engine in the MVP. Path lookup lives in
+`internal/jsonpath`, shared by the filter and the header templates.
+Note: the live matching path is `database.MatchingDestinationsForWorkspace`;
+`routing.Match` implements the same rules and is kept in sync.
 
 ### Metrics (`internal/metrics`)
 In-memory atomic counters plus a small latency histogram, rendered as
@@ -82,6 +100,9 @@ is always accurate.
 - HMAC-SHA256 verification with constant-time comparison.
 - Secure random IDs (`crypto/rand`).
 - Header redaction on ingest; secret masking in destination API responses.
+  The outbound signing secret is stored on the destination and never
+  returned in clear; sending `***REDACTED***` back on update leaves it
+  unchanged.
 - SSRF validation (see README security section).
 
 ## Data flow (ingest)

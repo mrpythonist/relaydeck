@@ -842,6 +842,19 @@ func maskDestination(d *database.Destination) *database.Destination {
 			cp.Headers[k] = v
 		}
 	}
+	// The signing secret is never returned in clear. Clients set it by
+	// sending a new value; sending "***REDACTED***" back leaves it unchanged.
+	if cp.SigningSecret != "" {
+		cp.SigningSecret = "***REDACTED***"
+	}
+	cp.HeaderTemplates = map[string]string{}
+	for k, v := range d.HeaderTemplates {
+		if security.IsSensitiveHeader(k) {
+			cp.HeaderTemplates[k] = "***REDACTED***"
+		} else {
+			cp.HeaderTemplates[k] = v
+		}
+	}
 	return &cp
 }
 
@@ -988,6 +1001,35 @@ func (s *Server) updateDestination(w http.ResponseWriter, r *http.Request) {
 	}
 	if d.Filter != "" {
 		existing.Filter = d.Filter
+	}
+	if r.URL.Query().Has("clear_filter") {
+		existing.Filter = ""
+	}
+	if d.JSONPathFilter != "" {
+		existing.JSONPathFilter = d.JSONPathFilter
+	}
+	if r.URL.Query().Has("clear_jsonpath") {
+		existing.JSONPathFilter = ""
+	}
+	if d.SigningSecret != "" && d.SigningSecret != "***REDACTED***" {
+		existing.SigningSecret = d.SigningSecret
+	}
+	if r.URL.Query().Has("clear_signing_secret") {
+		existing.SigningSecret = ""
+	}
+	if d.HeaderTemplates != nil {
+		if existing.HeaderTemplates == nil {
+			existing.HeaderTemplates = map[string]string{}
+		}
+		for k, v := range d.HeaderTemplates {
+			if v == "***REDACTED***" {
+				continue
+			}
+			existing.HeaderTemplates[k] = v
+		}
+	}
+	if r.URL.Query().Has("clear_header_templates") {
+		existing.HeaderTemplates = map[string]string{}
 	}
 	if d.Headers != nil {
 		if existing.Headers == nil {

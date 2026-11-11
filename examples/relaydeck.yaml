@@ -31,6 +31,10 @@ destinations:
     max_retries: 5
     backoff_base: 1s
     backoff_max: 60s
+    json_filter: type=payment_intent.succeeded
+    signing_secret: ${DST_SIGNING_SECRET}
+    header_templates:
+      X-Event-Type: "{{.type}}"
   - name: node-api
     source: github
     url: https://api.example.com/webhooks/github

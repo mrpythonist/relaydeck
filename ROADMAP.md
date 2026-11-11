@@ -26,12 +26,19 @@
 - Not verified live in Phase 1: Stripe checkout, VPS deploy, TLS,
   Docker build, load beyond a smoke test
 
-## v0.2.1 - Delivery hardening
-- Outbound HMAC signing of deliveries (per-destination signing secret)
-- JSON-path event filtering (in addition to substring matching)
-- Retention pruning job (`retention_days` enforced automatically)
-- Delivery payload transformation (header injection templates)
-- `relaydeck destinations` create/update/delete via CLI
+## v0.2.1 - Delivery hardening (done, 2026-11-11)
+- Outbound HMAC signing of deliveries (per-destination signing secret,
+  `X-RelayDeck-Signature: sha256=<hex>` over the raw body)
+- JSON-path event filtering (`filter_jsonpath`, for example
+  `type=payment_intent.succeeded`), in addition to substring matching;
+  both filters must pass when both are set
+- Retention pruning job (`retention_days` enforced automatically): already
+  wired in Phase 1 (hourly background job with per-plan retention plus
+  `relaydeck prune`), verified, not rebuilt here
+- Delivery payload transformation (header injection templates rendered
+  from the event payload, `{{path}}` placeholders)
+- `relaydeck destinations` create/update/delete via the CLI (the API
+  endpoints already existed; the CLI now calls them)
 
 ## v0.3.0 - Operability
 - Optional PostgreSQL storage backend (SQLite remains the default; never mandatory)

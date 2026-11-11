@@ -14,17 +14,20 @@ import (
 
 // DestinationConfig is a seed destination from YAML config.
 type DestinationConfig struct {
-	Name        string            `yaml:"name"`
-	Source      string            `yaml:"source"`
-	URL         string            `yaml:"url"`
-	Method      string            `yaml:"method"`
-	Headers     map[string]string `yaml:"headers"`
-	Timeout     time.Duration     `yaml:"timeout"`
-	MaxRetries  int               `yaml:"max_retries"`
-	BackoffBase time.Duration     `yaml:"backoff_base"`
-	BackoffMax  time.Duration     `yaml:"backoff_max"`
-	Enabled     *bool             `yaml:"enabled"`
-	Filter      string            `yaml:"filter"`
+	Name            string            `yaml:"name"`
+	Source          string            `yaml:"source"`
+	URL             string            `yaml:"url"`
+	Method          string            `yaml:"method"`
+	Headers         map[string]string `yaml:"headers"`
+	Timeout         time.Duration     `yaml:"timeout"`
+	MaxRetries      int               `yaml:"max_retries"`
+	BackoffBase     time.Duration     `yaml:"backoff_base"`
+	BackoffMax      time.Duration     `yaml:"backoff_max"`
+	Enabled         *bool             `yaml:"enabled"`
+	Filter          string            `yaml:"filter"`
+	JSONFilter      string            `yaml:"json_filter"`
+	SigningSecret   string            `yaml:"signing_secret"`
+	HeaderTemplates map[string]string `yaml:"header_templates"`
 }
 
 // SourceConfig is a seed source (with optional HMAC secret) from YAML.

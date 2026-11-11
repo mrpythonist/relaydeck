@@ -7,6 +7,16 @@ All notable changes to RelayDeck are documented here. The format follows
 
 ### Added
 
+- **v0.2.1 delivery hardening (2026-11-11, local only, not pushed yet):**
+  outbound HMAC signing per destination (`X-RelayDeck-Signature:
+  sha256=<hex>`, secret stored on the destination and masked in API
+  responses); JSON-path event filtering (`filter_jsonpath`, e.g.
+  `type=payment_intent.succeeded`, both filters must pass when both are
+  set); header injection templates rendered from the event payload
+  (`{{path}}` placeholders); `relaydeck destinations create | update |
+  delete` CLI subcommands (the API endpoints already existed). Retention
+  pruning was already wired in Phase 1 (hourly job, per-plan retention,
+  `relaydeck prune`) and was verified, not rebuilt.
 - Multi-tenancy: users, workspaces, memberships, workspace API keys
   (migration 002). Every tenant row carries `workspace_id`; legacy
   single-tenant data keeps workspace "" and still works.

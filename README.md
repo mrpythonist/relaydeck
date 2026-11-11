@@ -26,7 +26,7 @@ Signup flow: create an account at `/` with email and password, get a workspace, 
 
 Over the monthly limit, ingestion returns HTTP 429. Retries do not count against the limit. Plans and caps live in one file, `internal/plans/plans.go`.
 
-Hosted vs self-hosted: self-hosted is the default (`RELAYDECK_HOSTED` off), one tenant, legacy ingestion `POST /api/v1/webhooks/{source}`, no signup. Hosted mode adds users, workspaces, workspace API keys, per-workspace ingestion, usage limits and Stripe billing code. The core delivery engine is the same in both modes. Postgres is not used in Phase 1; hosted stays on SQLite with `workspace_id` on every tenant row, and Postgres is planned for Phase 2.
+Hosted vs self-hosted: self-hosted is the default (`RELAYDECK_HOSTED` off), one tenant, legacy ingestion `POST /api/v1/webhooks/{source}`, no signup. Hosted mode adds users, workspaces, workspace API keys, per-workspace ingestion, usage limits and Stripe billing code. The core delivery engine is the same in both modes. Postgres is not used in Phase 1; hosted stays on SQLite with `workspace_id` on every tenant row, and Postgres is planned for v0.3.0.
 
 ## The problem
 
@@ -52,18 +52,20 @@ Hosted webhook services work, but they add a vendor, a bill, and an external dep
 
 ## Key features
 
-Implemented in v0.1.0. Nothing in this list is planned or aspirational; planned work lives in [ROADMAP.md](ROADMAP.md).
+Implemented in v0.1.0 through v0.2.1. Nothing in this list is planned or aspirational; planned work lives in [ROADMAP.md](ROADMAP.md).
 
 - **Durable ingestion.** `POST /api/v1/webhooks/{source}` returns 202 only after the SQLite transaction (event plus its deliveries) commits. WAL mode, indexed, single-writer discipline.
 - **Idempotency.** Send an `Idempotency-Key` header. A repeated key for the same source returns the original event with `"duplicate": true` and creates no new deliveries.
 - **HMAC signature verification.** Per-source secrets, verified with HMAC-SHA256 and a constant-time compare. Accepts `X-RelayDeck-Signature` or `X-Hub-Signature-256` (`sha256=<hex>`).
 - **Delivery engine.** Bounded worker pool, per-destination retry settings, exponential backoff with jitter, manual retry, and event replay.
 - **Crash recovery.** Lease-based delivery claiming. Stale leases are re-queued on startup and on every poll tick, so pending deliveries survive restarts.
-- **Routing.** Multiple destinations, source filters, optional payload-substring filters, per-destination headers, method, and timeout. Destinations can be enabled or disabled.
+- **Routing.** Multiple destinations, source filters, optional payload-substring filters and JSON-path filters (`filter_jsonpath`, for example `type=payment_intent.succeeded`; both filters must pass when both are set), per-destination headers and header templates rendered from the event payload, method, and timeout. Destinations can be enabled or disabled.
+- **Outbound HMAC signing.** A destination can carry a signing secret; every delivery then sends `X-RelayDeck-Signature: sha256=<hex>`, HMAC-SHA256 over the raw body, so the receiver can verify the event came from RelayDeck. The secret is stored on the destination and never returned by the API in clear.
 - **SSRF protection.** Destination URLs must be public `http(s)` URLs. Loopback, private, link-local, cloud-metadata (`169.254.169.254`), CGNAT, multicast, and documentation ranges are blocked. Hostnames are resolved and every resolved IP is re-checked (DNS-rebinding defence). Redirects to private IPs are blocked. Private destinations are an explicit local-dev opt-in only.
 - **Embedded dashboard.** No build step, no Node, no CDN. Plain HTML/CSS/JS served from the binary, with dark/light themes and tabs for Overview, Events, Deliveries, Destinations, Sources, Failed, and Settings. All data comes from the live API.
-- **CLI.** `relaydeck serve`, `version`, `config validate`, `events list | inspect | replay`, `destinations list`, `health`, `prune`.
+- **CLI.** `relaydeck serve`, `version`, `config validate`, `events list | inspect | replay`, `destinations list | create | update | delete`, `health`, `prune`.
 - **Hosted (Phase 1, v0.2.0).** Signup/login with bcrypt passwords and session cookies, workspaces, workspace API keys, per-workspace ingestion (`POST /ingest/{workspace}/{source}`), plans and monthly limits with HTTP 429, usage endpoint, retention pruning job and `relaydeck prune` CLI, Stripe Checkout and webhook code (no live keys), pricing page at `/pricing`. See `docs/HOSTED.md`.
+- **Delivery hardening (v0.2.1).** Outbound HMAC signing per destination, JSON-path event filtering, header injection templates, and `relaydeck destinations` create/update/delete via the CLI. Retention pruning was already wired in Phase 1 (hourly job, per-plan retention, `relaydeck prune`).
 - **Observability.** `GET /health`, `GET /ready`, `GET /metrics` in Prometheus text format, and structured JSON logging.
 - **Security by default.** API-key auth for the management API, sensitive-header redaction on stored events, secret masking in API responses, request-size limits, and server timeouts.
 
@@ -215,6 +217,10 @@ destinations:
     source: stripe
     url: https://api.example.com/webhooks/stripe
     max_retries: 5
+    json_filter: type=payment_intent.succeeded
+    signing_secret: ${DST_SIGNING_SECRET}
+    header_templates:
+      X-Event-Type: "{{.type}}"
 ```
 
 Notes:
@@ -244,10 +250,13 @@ relaydeck events list [--base-url URL]
 relaydeck events inspect <id> [--base-url URL]
 relaydeck events replay <id> [--base-url URL]
 relaydeck destinations list [--base-url URL]
+relaydeck destinations create --name NAME --url URL [--source S] [--filter SUB] [--json-filter EXPR] [--signing-secret S] [--header k=v] [--header-template k=tpl] [--method M] [--timeout N] [--max-retries N]
+relaydeck destinations update <id-or-name> [--url URL] [--filter SUB] [--json-filter EXPR] [--signing-secret S] [--clear-filter] [--clear-json-filter] [--clear-signing-secret] [--clear-header-templates]
+relaydeck destinations delete <id-or-name>
 relaydeck health [--base-url URL]
 ```
 
-`--base-url` defaults to `http://localhost:8080` and may appear before or after the positional argument. `relaydeck version` prints the version embedded at build time (`0.1.0-dev` for a plain `go build`; release builds set the real version).
+`--base-url` defaults to `http://localhost:8080` and may appear before or after the positional argument. `relaydeck version` prints the version embedded at build time (`0.1.0-dev` for a plain `go build`; release builds set the real version). `destinations update` fetches the current destination first and only changes the flags you pass; `--clear-*` flags wipe a field. A destination can also be addressed by name in `update` and `delete` (names are unique per workspace).
 
 ### HTTP API
 
@@ -284,7 +293,7 @@ When `RELAYDECK_API_KEY` is set, all `/api/v1/*` management endpoints require `X
 - `413`: payload exceeds the configured limit.
 - Send `Idempotency-Key: <key>` to make re-sends safe. A repeated key for the same source returns the original `event_id` with `"duplicate":true` and creates no new deliveries.
 - Send `X-RelayDeck-Signature: <hex>` or `X-Hub-Signature-256: sha256=<hex>` (HMAC-SHA256 of the raw body, keyed with the source secret) when the source has a secret configured.
-- Outbound deliveries send `User-Agent: RelayDeck/0.1.0` and `X-RelayDeck-Event-Delivery: 1`, plus the original `Content-Type` and any headers configured on the destination.
+- Outbound deliveries send `User-Agent: RelayDeck/0.1.0` and `X-RelayDeck-Event-Delivery: 1`, plus the original `Content-Type` and any headers configured on the destination. Header templates are rendered from the event payload (`{{path}}` placeholders, for example `X-Event-Type: {{.type}}`); a template wins over a static header with the same name. When the destination has a signing secret, deliveries also send `X-RelayDeck-Signature: sha256=<hex>` (HMAC-SHA256 over the raw body).
 
 ### Retry behavior
 

@@ -59,3 +59,29 @@ format by hand avoids a dependency and keeps the binary light.
 Routing is source filter + optional payload-substring filter. A JSON-path
 filter is planned (v0.2.0) only after the core proves itself; premature
 rule engines are the classic way gateway projects stall.
+
+Update (v0.2.1, 2026-11-11): the JSON-path filter landed, kept to the
+same small shape — one `path=expected` expression per destination, dotted
+paths with optional `[n]` indexes, both filters must pass when both are
+set. Still no rules engine; the filter answers one question (does this
+event belong here) and nothing else.
+
+## ADR-011: Outbound HMAC signing reuses the ingestion format
+Deliveries to a destination with a signing secret carry
+`X-RelayDeck-Signature: sha256=<hex>`, HMAC-SHA256 over the raw body.
+This is the same format the ingestion side verifies (`X-Hub-Signature-256`
+style), so one code path (`security.HMACSHA256Hex` /
+`security.VerifySignature`) serves both directions and receivers can
+verify with any standard HMAC-SHA256 check. The signature is set last in
+the sender, after static headers and header templates, so no template can
+overwrite it. The secret is stored on the destination (like source
+secrets) and never returned by the API in clear.
+
+## ADR-012: Header templates are plain `{{path}}` substitution
+Header injection uses the same dotted-path lookup as the JSON-path filter
+(`internal/jsonpath`), not Go's `text/template`: templates are small
+(`X-Event-Type: {{.type}}`), the lookup is one function, and a missing
+path renders as an empty string instead of an error. Template values come
+from the event payload, so a template can only surface data the event
+already carried. Templates are applied after static headers and win on a
+name clash; the HMAC signature is applied after both.

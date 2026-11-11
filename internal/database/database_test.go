@@ -250,6 +250,130 @@ func TestDestinationCRUD(t *testing.T) {
 	}
 }
 
+// TestDestinationV021Fields round-trips the v0.2.1 destination fields
+// (JSON-path filter, signing secret, header templates) through create,
+// read and update, and checks the JSON-path filter in matching.
+func TestDestinationV021Fields(t *testing.T) {
+	s := openTestStore(t)
+	d := testDest("dst_aaaaaaaaaaaaaaaaaaaaaaaa", "api")
+	d.JSONPathFilter = "type=payment_intent.succeeded"
+	d.SigningSecret = "dst-secret"
+	d.HeaderTemplates = map[string]string{"X-Event-Type": "{{.type}}"}
+	if err := s.CreateDestination(d); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.GetDestinationByName("api")
+	if err != nil || got == nil {
+		t.Fatalf("get: %+v %v", got, err)
+	}
+	if got.JSONPathFilter != "type=payment_intent.succeeded" || got.SigningSecret != "dst-secret" {
+		t.Fatalf("fields not stored: %+v", got)
+	}
+	if got.HeaderTemplates["X-Event-Type"] != "{{.type}}" {
+		t.Fatalf("templates not stored: %+v", got.HeaderTemplates)
+	}
+	// Matching honours the JSON-path filter.
+	matchPayload := []byte(`{"type":"payment_intent.succeeded"}`)
+	nomatchPayload := []byte(`{"type":"charge.failed"}`)
+	if m, _ := s.MatchingDestinations("stripe", matchPayload); len(m) != 1 {
+		t.Fatalf("matching payload should match 1 destination, got %d", len(m))
+	}
+	if m, _ := s.MatchingDestinations("stripe", nomatchPayload); len(m) != 0 {
+		t.Fatalf("non-matching payload should match 0 destinations, got %d", len(m))
+	}
+	// Update the fields and clear them again.
+	got.JSONPathFilter = "type=charge.failed"
+	got.SigningSecret = "new-secret"
+	if err := s.UpdateDestination(got); err != nil {
+		t.Fatal(err)
+	}
+	got2, _ := s.GetDestinationByName("api")
+	if got2.JSONPathFilter != "type=charge.failed" || got2.SigningSecret != "new-secret" {
+		t.Fatalf("fields not updated: %+v", got2)
+	}
+	got2.JSONPathFilter = ""
+	got2.SigningSecret = ""
+	got2.HeaderTemplates = map[string]string{}
+	if err := s.UpdateDestination(got2); err != nil {
+		t.Fatal(err)
+	}
+	got3, _ := s.GetDestinationByName("api")
+	if got3.JSONPathFilter != "" || got3.SigningSecret != "" || len(got3.HeaderTemplates) != 0 {
+		t.Fatalf("fields not cleared: %+v", got3)
+	}
+}
+
+// TestV021MigrationColumns checks the v0.2.1 columns exist on a fresh
+// database and that a pre-v0.2.1 database gains them on open.
+func TestV021MigrationColumns(t *testing.T) {
+	s := openTestStore(t)
+	var n int
+	err := s.DB.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('destinations') WHERE name IN ('filter_jsonpath','signing_secret','header_templates_json')`).Scan(&n)
+	if err != nil || n != 3 {
+		t.Fatalf("fresh DB should have 3 new columns, found %d (err %v)", n, err)
+	}
+	// Simulate a pre-v0.2.1 database: drop the columns via a table rebuild
+	// without them, then re-open and check migrateV021 restores them.
+	dbPath := filepath.Join(t.TempDir(), "old.db")
+	old, err := Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = old.DB.Exec(`ALTER TABLE destinations RENAME TO destinations_old;
+		CREATE TABLE destinations (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL DEFAULT '', name TEXT NOT NULL, source_filter TEXT NOT NULL DEFAULT '', url TEXT NOT NULL, method TEXT NOT NULL DEFAULT 'POST', headers_json TEXT NOT NULL DEFAULT '{}', timeout_seconds INTEGER NOT NULL DEFAULT 10, max_retries INTEGER NOT NULL DEFAULT 5, backoff_base_ms INTEGER NOT NULL DEFAULT 1000, backoff_max_ms INTEGER NOT NULL DEFAULT 60000, filter_substring TEXT NOT NULL DEFAULT '', enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE(workspace_id, name));
+		INSERT INTO destinations(id,workspace_id,name,source_filter,url,method,headers_json,timeout_seconds,max_retries,backoff_base_ms,backoff_max_ms,filter_substring,enabled,created_at,updated_at) SELECT id,workspace_id,name,source_filter,url,method,headers_json,timeout_seconds,max_retries,backoff_base_ms,backoff_max_ms,filter_substring,enabled,created_at,updated_at FROM destinations_old;
+		DROP TABLE destinations_old`)
+	if err != nil {
+		t.Fatalf("rebuild old table: %v", err)
+	}
+	_ = old.Close()
+	reopened, err := Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	err = reopened.DB.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('destinations') WHERE name IN ('filter_jsonpath','signing_secret','header_templates_json')`).Scan(&n)
+	if err != nil || n != 3 {
+		t.Fatalf("reopened DB should have 3 new columns, found %d (err %v)", n, err)
+	}
+}
+
+// TestDeleteDestinationWithDeliveries checks that deleting a destination
+// also removes its delivery history instead of failing the foreign key.
+func TestDeleteDestinationWithDeliveries(t *testing.T) {
+	s := openTestStore(t)
+	d := testDest("dst_aaaaaaaaaaaaaaaaaaaaaaaa", "api")
+	if err := s.CreateDestination(d); err != nil {
+		t.Fatal(err)
+	}
+	dests, _ := s.MatchingDestinations("stripe", []byte(`{}`))
+	ev := &Event{ID: "evt_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Source: "stripe", Payload: []byte(`{"type":"x"}`), Headers: map[string]string{}}
+	if _, err := s.CreateEvent(ev, dests); err != nil {
+		t.Fatal(err)
+	}
+	if dels, _ := s.ListDeliveries(10, "", ""); len(dels) != 1 {
+		t.Fatalf("expected 1 delivery before delete, got %d", len(dels))
+	}
+	ok, err := s.DeleteDestinationForWorkspace(d.ID, "")
+	if err != nil || !ok {
+		t.Fatalf("delete: ok=%v err=%v", ok, err)
+	}
+	if g, _ := s.GetDestination(d.ID); g != nil {
+		t.Fatal("destination still present after delete")
+	}
+	if dels, _ := s.ListDeliveries(10, "", ""); len(dels) != 0 {
+		t.Fatalf("deliveries should be gone with the destination, got %d", len(dels))
+	}
+	// The event itself is kept: it can belong to other destinations.
+	if got, _ := s.GetEvent(ev.ID); got == nil {
+		t.Fatal("event should survive its destination being deleted")
+	}
+	// Deleting a missing destination reports false, no error.
+	if ok, err := s.DeleteDestinationForWorkspace("dst_missing", ""); err != nil || ok {
+		t.Fatalf("delete missing: ok=%v err=%v", ok, err)
+	}
+}
+
 func TestSourceSecret(t *testing.T) {
 	s := openTestStore(t)
 	_ = s.UpsertSource("stripe", "whsec_123")

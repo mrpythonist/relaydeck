@@ -158,6 +158,58 @@ func TestDestinationValidationRejectsPrivate(t *testing.T) {
 	}
 }
 
+// TestDestinationV021Fields checks the v0.2.1 destination fields through
+// the API: the signing secret is stored but never returned in clear, the
+// JSON-path filter and header templates round-trip, and the clear query
+// params wipe a field.
+func TestDestinationV021Fields(t *testing.T) {
+	srv, store := testServer(t, "")
+	body := []byte(`{"name":"api","url":"https://example.com/hook","filter_jsonpath":"type=payment_intent.succeeded","signing_secret":"dst-secret","header_templates":{"X-Event-Type":"{{.type}}"}}`)
+	rec := doReq(t, srv, "POST", "/api/v1/destinations", body, map[string]string{"Content-Type": "application/json"})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create: %d %s", rec.Code, rec.Body.String())
+	}
+	var created map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &created)
+	if created["signing_secret"] == "dst-secret" {
+		t.Fatal("API returned the signing secret in clear")
+	}
+	if created["signing_secret"] != "***REDACTED***" {
+		t.Fatalf("signing secret should be masked, got %v", created["signing_secret"])
+	}
+	if created["filter_jsonpath"] != "type=payment_intent.succeeded" {
+		t.Fatalf("JSON-path filter not returned: %v", created["filter_jsonpath"])
+	}
+	tpl, _ := created["header_templates"].(map[string]any)
+	if tpl["X-Event-Type"] != "{{.type}}" {
+		t.Fatalf("header templates not returned: %v", created["header_templates"])
+	}
+	// The secret really is stored: read the row directly.
+	d, _ := store.GetDestinationByName("api")
+	if d == nil || d.SigningSecret != "dst-secret" {
+		t.Fatalf("secret not stored: %+v", d)
+	}
+	id := created["id"].(string)
+	// Update the JSON-path filter; the masked secret must stay unchanged.
+	up := doReq(t, srv, "PUT", "/api/v1/destinations/"+id, []byte(`{"filter_jsonpath":"type=charge.failed"}`), map[string]string{"Content-Type": "application/json"})
+	if up.Code != http.StatusOK {
+		t.Fatalf("update: %d %s", up.Code, up.Body.String())
+	}
+	d, _ = store.GetDestinationByName("api")
+	if d.JSONPathFilter != "type=charge.failed" || d.SigningSecret != "dst-secret" {
+		t.Fatalf("update wrong: %+v", d)
+	}
+	// Clear the JSON-path filter and the signing secret.
+	clr := doReq(t, srv, "PUT", "/api/v1/destinations/"+id+"?clear_jsonpath=1&clear_signing_secret=1", []byte(`{}`), map[string]string{"Content-Type": "application/json"})
+	if clr.Code != http.StatusOK {
+		t.Fatalf("clear: %d %s", clr.Code, clr.Body.String())
+	}
+	d, _ = store.GetDestinationByName("api")
+	if d.JSONPathFilter != "" || d.SigningSecret != "" {
+		t.Fatalf("clear did not wipe fields: %+v", d)
+	}
+}
+
 func TestReplayAndRetryEndpoints(t *testing.T) {
 	srv, store := testServer(t, "")
 	// Destination with a dead endpoint is not needed: replay works with zero dests too,
